@@ -108,17 +108,24 @@ export default function KaratApp() {
     setLoading(true);
 
     try {
-      // Create a simple 1x1 pixel image as placeholder
+      // Create a simple placeholder image
       const canvas = document.createElement('canvas');
-      canvas.width = 1;
-      canvas.height = 1;
+      canvas.width = 100;
+      canvas.height = 100;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f0f0f0';
+      ctx.fillRect(0, 0, 100, 100);
+      ctx.fillStyle = '#333';
+      ctx.font = '12px Arial';
+      ctx.fillText(storeName, 10, 50);
+      
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       
       const formData = new FormData();
       formData.append('receipt_image', blob, 'receipt.png');
       formData.append('amount', receiptAmount);
       formData.append('store_name', storeName);
-      formData.append('is_featured', isFeatured);
+      formData.append('is_featured', isFeatured.toString());
 
       const response = await fetch(`${API_BASE_URL}/receipts/upload`, {
         method: 'POST',
@@ -140,7 +147,8 @@ export default function KaratApp() {
       fetchDashboard(token);
       setActiveView('dashboard');
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Upload failed');
+      console.error('Upload error:', err);
     } finally {
       setLoading(false);
     }
