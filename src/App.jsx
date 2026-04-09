@@ -3,7 +3,7 @@ import { Camera, TrendingUp, Wallet, LogOut, Upload, DollarSign } from 'lucide-r
 
 const API_BASE_URL = 'https://web-production-65513.up.railway.app/api';
 
-export default function KaratApp() {
+export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
   const [token, setToken] = useState(null);
@@ -21,10 +21,11 @@ export default function KaratApp() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   
-  // Receipt upload
+  // Receipt upload states
   const [receiptAmount, setReceiptAmount] = useState('');
   const [storeName, setStoreName] = useState('');
   const [isFeatured, setIsFeatured] = useState(false);
+  const [receiptFile, setReceiptFile] = useState(null);
 
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
@@ -107,22 +108,15 @@ export default function KaratApp() {
     setError('');
     setLoading(true);
 
+    if (!receiptFile) {
+      setError('Please select a receipt image to upload.');
+      setLoading(false);
+      return;
+    }
+
     try {
-      // Create a simple placeholder image
-      const canvas = document.createElement('canvas');
-      canvas.width = 100;
-      canvas.height = 100;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(0, 0, 100, 100);
-      ctx.fillStyle = '#333';
-      ctx.font = '12px Arial';
-      ctx.fillText(storeName, 10, 50);
-      
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-      
       const formData = new FormData();
-      formData.append('receipt_image', blob, 'receipt.png');
+      formData.append('receipt_image', receiptFile);
       formData.append('amount', receiptAmount);
       formData.append('store_name', storeName);
       formData.append('is_featured', isFeatured.toString());
@@ -133,17 +127,28 @@ export default function KaratApp() {
         body: formData
       });
 
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Server error: The backend is down or returned an invalid response.");
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
         throw new Error(data.error || 'Upload failed');
       }
 
-      alert(`Receipt uploaded! You earned ${data.receipt.points} points ($${data.receipt.share_value.toFixed(2)} in shares) + $${data.receipt.round_up.toFixed(2)} round-up!`);
+      const points = data.receipt?.points || 0;
+      const shares = data.receipt?.share_value || 0;
+      const roundUp = data.receipt?.round_up || 0;
+
+      alert(`Receipt uploaded! You earned ${points} points ($${shares.toFixed(2)} in shares) + $${roundUp.toFixed(2)} round-up!`);
       
       setReceiptAmount('');
       setStoreName('');
       setIsFeatured(false);
+      setReceiptFile(null);
+      
       fetchDashboard(token);
       setActiveView('dashboard');
     } catch (err) {
@@ -390,6 +395,17 @@ export default function KaratApp() {
             </p>
 
             <form onSubmit={handleReceiptUpload} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Receipt Image</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setReceiptFile(e.target.files[0])}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 bg-white"
+                  required
+                />
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Store Name</label>
                 <input
