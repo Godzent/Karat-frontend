@@ -1,7 +1,47 @@
-import React, { useState, useEffect } from 'react';
-import { Camera, TrendingUp, Wallet, LogOut, Upload, DollarSign } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Camera, TrendingUp, Wallet, LogOut, Upload, DollarSign, BarChart3, ArrowUpRight, ArrowDownRight, RefreshCw } from 'lucide-react';
 
 const API_BASE_URL = 'https://web-production-65513.up.railway.app/api';
+
+// ==================== MINI SPARKLINE COMPONENT ====================
+function Sparkline({ data, color = '#8b5cf6', width = 80, height = 32 }) {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const points = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ((v - min) / range) * (height - 4) - 2;
+    return `${x},${y}`;
+  }).join(' ');
+
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// ==================== PRICE CHANGE BADGE ====================
+function PriceChange({ change, changePct }) {
+  if (change === undefined || change === null) return null;
+  const isUp = change >= 0;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-xs font-semibold px-1.5 py-0.5 rounded-md ${
+      isUp ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
+    }`}>
+      {isUp ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+      {changePct !== undefined ? `${Math.abs(changePct).toFixed(2)}%` : `$${Math.abs(change).toFixed(2)}`}
+    </span>
+  );
+}
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -9,24 +49,31 @@ export default function App() {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [activeView, setActiveView] = useState('dashboard');
-  
+
   // Dashboard data
   const [dashboard, setDashboard] = useState(null);
   const [portfolio, setPortfolio] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  
+
+  // Live stock prices
+  const [stockPrices, setStockPrices] = useState({});
+  const [stockHistory, setStockHistory] = useState({});
+  const [pricesLoading, setPricesLoading] = useState(false);
+  const [lastPriceUpdate, setLastPriceUpdate] = useState(null);
+
   // Form states
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  
+
   // Receipt upload states
   const [receiptAmount, setReceiptAmount] = useState('');
   const [storeName, setStoreName] = useState('');
   const [isFeatured, setIsFeatured] = useState(false);
   const [receiptFile, setReceiptFile] = useState(null);
 
+  // ==================== AUTH / INIT ====================
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedUser = localStorage.getItem('user');
@@ -35,8 +82,18 @@ export default function App() {
       setUser(JSON.parse(savedUser));
       setIsAuthenticated(true);
       fetchDashboard(savedToken);
+      fetchStockPrices(savedToken);
     }
   }, []);
+
+  // Auto-refresh prices every 5 minutes
+  useEffect(() => {
+    if (!token) return;
+    const interval = setInterval(() => {
+      fetchStockPrices(token);
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [token]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -45,9 +102,7 @@ export default function App() {
 
     try {
       const endpoint = isLogin ? '/auth/login' : '/auth/signup';
-      const body = isLogin 
-        ? { email, password }
-        : { email, password, name };
+      const body = isLogin ? { email, password } : { email, password, name };
 
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
@@ -56,19 +111,15 @@ export default function App() {
       });
 
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Authentication failed');
-      }
+      if (!response.ok) throw new Error(data.error || 'Authentication failed');
 
       setToken(data.access_token);
       setUser(data.user);
       setIsAuthenticated(true);
-      
       localStorage.setItem('token', data.access_token);
       localStorage.setItem('user', JSON.stringify(data.user));
-      
       fetchDashboard(data.access_token);
+      fetchStockPrices(data.access_token);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -76,6 +127,7 @@ export default function App() {
     }
   };
 
+  // ==================== DATA FETCHING ====================
   const fetchDashboard = async (authToken) => {
     try {
       const response = await fetch(`${API_BASE_URL}/dashboard`, {
@@ -102,6 +154,59 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  const fetchStockPrices = async (authToken) => {
+    const t = authToken || token;
+    if (!t) return;
+    setPricesLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/stocks/prices`, {
+        headers: { 'Authorization': `Bearer ${t}` }
+      });
+      const data = await response.json();
+      if (data.prices) {
+        setStockPrices(data.prices);
+        setLastPriceUpdate(new Date());
+      }
+    } catch (err) {
+      console.error('Failed to fetch stock prices:', err);
+    } finally {
+      setPricesLoading(false);
+    }
+  };
+
+  const fetchStockHistory = async (symbol) => {
+    if (stockHistory[symbol]) return; // already cached
+    try {
+      const response = await fetch(`${API_BASE_URL}/stocks/history/${symbol}?period=1mo&interval=1d`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await response.json();
+      if (data.history) {
+        setStockHistory(prev => ({
+          ...prev,
+          [symbol]: data.history.map(d => d.close)
+        }));
+      }
+    } catch (err) {
+      console.error(`Failed to fetch history for ${symbol}:`, err);
+    }
+  };
+
+  // Fetch history for all symbols when markets tab opens
+  useEffect(() => {
+    if (activeView === 'markets' && token && Object.keys(stockPrices).length > 0) {
+      Object.keys(stockPrices).forEach(symbol => fetchStockHistory(symbol));
+    }
+  }, [activeView, stockPrices]);
+
+  // Fetch history for portfolio holdings too
+  useEffect(() => {
+    if (activeView === 'portfolio' && token) {
+      fetchPortfolio();
+      portfolio.forEach(h => fetchStockHistory(h.symbol));
+    }
+  }, [activeView, isAuthenticated]);
 
   const handleReceiptUpload = async (e) => {
     e.preventDefault();
@@ -133,22 +238,18 @@ export default function App() {
       }
 
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Upload failed');
-      }
+      if (!response.ok) throw new Error(data.error || 'Upload failed');
 
       const points = data.receipt?.points || 0;
       const shares = data.receipt?.share_value || 0;
       const roundUp = data.receipt?.round_up || 0;
 
       alert(`Receipt uploaded! You earned ${points} points ($${shares.toFixed(2)} in shares) + $${roundUp.toFixed(2)} round-up!`);
-      
+
       setReceiptAmount('');
       setStoreName('');
       setIsFeatured(false);
       setReceiptFile(null);
-      
       fetchDashboard(token);
       setActiveView('dashboard');
     } catch (err) {
@@ -165,16 +266,13 @@ export default function App() {
     setUser(null);
     setDashboard(null);
     setPortfolio([]);
+    setStockPrices({});
+    setStockHistory({});
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };
 
-  useEffect(() => {
-    if (activeView === 'portfolio' && isAuthenticated) {
-      fetchPortfolio();
-    }
-  }, [activeView, isAuthenticated]);
-
+  // ==================== LOGIN / SIGNUP SCREEN ====================
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center p-4">
@@ -270,6 +368,7 @@ export default function App() {
     );
   }
 
+  // ==================== MAIN APP ====================
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50">
       {/* Header */}
@@ -301,13 +400,18 @@ export default function App() {
               <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4 col-span-2">
                 <div className="text-xs opacity-90">Portfolio Value</div>
                 <div className="text-2xl font-bold">${dashboard.portfolio_value?.toFixed(2) || '0.00'}</div>
+                {lastPriceUpdate && (
+                  <div className="text-xs opacity-70 mt-1">
+                    Live prices as of {lastPriceUpdate.toLocaleTimeString()}
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Navigation */}
+      {/* Navigation — 4 tabs now */}
       <div className="bg-white shadow-md sticky top-0 z-10">
         <div className="max-w-4xl mx-auto flex justify-around py-3">
           <button
@@ -315,7 +419,7 @@ export default function App() {
             className={`flex flex-col items-center ${activeView === 'dashboard' ? 'text-purple-600' : 'text-gray-400'}`}
           >
             <TrendingUp size={24} />
-            <span className="text-xs mt-1">Dashboard</span>
+            <span className="text-xs mt-1">Home</span>
           </button>
           <button
             onClick={() => setActiveView('upload')}
@@ -323,6 +427,13 @@ export default function App() {
           >
             <Camera size={24} />
             <span className="text-xs mt-1">Upload</span>
+          </button>
+          <button
+            onClick={() => setActiveView('markets')}
+            className={`flex flex-col items-center ${activeView === 'markets' ? 'text-purple-600' : 'text-gray-400'}`}
+          >
+            <BarChart3 size={24} />
+            <span className="text-xs mt-1">Markets</span>
           </button>
           <button
             onClick={() => setActiveView('portfolio')}
@@ -336,6 +447,8 @@ export default function App() {
 
       {/* Content */}
       <div className="max-w-4xl mx-auto p-4">
+
+        {/* ==================== DASHBOARD ==================== */}
         {activeView === 'dashboard' && (
           <div className="space-y-4">
             <div className="bg-white rounded-xl p-6 shadow-md">
@@ -347,14 +460,46 @@ export default function App() {
                 </div>
                 <div className="flex gap-3">
                   <div className="bg-purple-100 text-purple-600 rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 font-bold">2</div>
-                  <div>Each purchase rounds up to the nearest dollar - spare change goes to your investment balance</div>
+                  <div>Each purchase rounds up to the nearest dollar — spare change goes to your investment balance</div>
                 </div>
                 <div className="flex gap-3">
                   <div className="bg-purple-100 text-purple-600 rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 font-bold">3</div>
-                  <div>Use your round-up balance to buy any stocks you want</div>
+                  <div>Watch your portfolio grow with live market prices</div>
                 </div>
               </div>
             </div>
+
+            {/* Quick market glance on dashboard */}
+            {Object.keys(stockPrices).length > 0 && (
+              <div className="bg-white rounded-xl p-6 shadow-md">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold">Market Snapshot</h2>
+                  <button
+                    onClick={() => fetchStockPrices()}
+                    className={`text-gray-400 hover:text-purple-600 transition ${pricesLoading ? 'animate-spin' : ''}`}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(stockPrices).slice(0, 4).map(([symbol, info]) => (
+                    <div key={symbol} className="border rounded-lg p-3 flex items-center justify-between">
+                      <div>
+                        <div className="font-bold text-sm">{symbol}</div>
+                        <div className="text-sm text-gray-700">${info.price?.toFixed(2)}</div>
+                      </div>
+                      <PriceChange change={info.change} changePct={info.change_pct} />
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setActiveView('markets')}
+                  className="text-purple-600 text-sm font-medium mt-3 hover:underline"
+                >
+                  View all markets →
+                </button>
+              </div>
+            )}
 
             {dashboard?.recent_receipts && dashboard.recent_receipts.length > 0 && (
               <div className="bg-white rounded-xl p-6 shadow-md">
@@ -387,6 +532,7 @@ export default function App() {
           </div>
         )}
 
+        {/* ==================== UPLOAD ==================== */}
         {activeView === 'upload' && (
           <div className="bg-white rounded-xl p-6 shadow-md">
             <h2 className="text-xl font-bold mb-4">Upload Receipt</h2>
@@ -461,7 +607,7 @@ export default function App() {
             </form>
 
             <div className="mt-6 bg-blue-50 rounded-lg p-4 text-sm">
-              <div className="font-semibold text-blue-900 mb-2">💡 How Points Work:</div>
+              <div className="font-semibold text-blue-900 mb-2">How Points Work:</div>
               <ul className="space-y-1 text-blue-800">
                 <li>• Every receipt: 25 points minimum ($0.25 in stock)</li>
                 <li>• Featured brands: +150-500 bonus points!</li>
@@ -471,10 +617,80 @@ export default function App() {
           </div>
         )}
 
+        {/* ==================== MARKETS ==================== */}
+        {activeView === 'markets' && (
+          <div className="bg-white rounded-xl p-6 shadow-md">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">Live Markets</h2>
+              <button
+                onClick={() => fetchStockPrices()}
+                className={`flex items-center gap-1 text-sm text-purple-600 hover:text-purple-800 transition ${pricesLoading ? 'opacity-50' : ''}`}
+              >
+                <RefreshCw size={14} className={pricesLoading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            </div>
+
+            {lastPriceUpdate && (
+              <p className="text-xs text-gray-500 mb-4">
+                Last updated: {lastPriceUpdate.toLocaleTimeString()} • Auto-refreshes every 5 min
+              </p>
+            )}
+
+            {Object.keys(stockPrices).length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                {pricesLoading ? 'Loading live prices...' : 'No price data available'}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(stockPrices).map(([symbol, info]) => (
+                  <div key={symbol} className="border rounded-lg p-4 hover:bg-gray-50 transition">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                        <div>
+                          <div className="font-bold text-lg">{symbol}</div>
+                          <div className="text-xs text-gray-500">
+                            {symbol === 'VOO' && 'S&P 500 ETF'}
+                            {symbol === 'QQQ' && 'Nasdaq 100 ETF'}
+                            {symbol === 'AAPL' && 'Apple Inc.'}
+                            {symbol === 'TSLA' && 'Tesla Inc.'}
+                            {symbol === 'MSFT' && 'Microsoft Corp.'}
+                            {symbol === 'NVDA' && 'NVIDIA Corp.'}
+                            {symbol === 'GOOGL' && 'Alphabet Inc.'}
+                            {symbol === 'AMZN' && 'Amazon.com'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        {stockHistory[symbol] && (
+                          <Sparkline
+                            data={stockHistory[symbol]}
+                            color={info.change >= 0 ? '#10b981' : '#ef4444'}
+                          />
+                        )}
+                        <div className="text-right">
+                          <div className="font-semibold text-lg">${info.price?.toFixed(2)}</div>
+                          <PriceChange change={info.change} changePct={info.change_pct} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-4 bg-amber-50 rounded-lg p-3 text-xs text-amber-700">
+              Prices from Yahoo Finance. Simulated portfolio only — no real trades are executed.
+            </div>
+          </div>
+        )}
+
+        {/* ==================== PORTFOLIO ==================== */}
         {activeView === 'portfolio' && (
           <div className="bg-white rounded-xl p-6 shadow-md">
             <h2 className="text-xl font-bold mb-4">My Portfolio</h2>
-            
+
             {loading ? (
               <div className="text-center py-8 text-gray-500">Loading...</div>
             ) : portfolio.length === 0 ? (
@@ -484,32 +700,59 @@ export default function App() {
               </div>
             ) : (
               <div className="space-y-3">
-                {portfolio.map((holding, idx) => (
-                  <div key={idx} className="border rounded-lg p-4 hover:bg-gray-50 transition">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <div className="font-bold text-lg">{holding.symbol}</div>
-                        <div className="text-sm text-gray-600">{holding.shares.toFixed(6)} shares</div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          {holding.source === 'receipt' ? '📸 Receipt rewards' : 
-                           holding.source === 'roundup' ? '💰 Round-ups' : '💰📸 Mixed'}
+                {portfolio.map((holding, idx) => {
+                  const liveInfo = stockPrices[holding.symbol];
+                  const livePrice = liveInfo?.price || holding.current_price;
+                  const liveValue = holding.shares * livePrice;
+
+                  return (
+                    <div key={idx} className="border rounded-lg p-4 hover:bg-gray-50 transition">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <div className="font-bold text-lg">{holding.symbol}</div>
+                          <div className="text-sm text-gray-600">{holding.shares.toFixed(6)} shares</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {holding.source === 'receipt' ? '📸 Receipt rewards' :
+                             holding.source === 'roundup' ? '💰 Round-ups' : '💰📸 Mixed'}
+                          </div>
+                        </div>
+                        <div className="text-right flex flex-col items-end gap-1">
+                          <div className="font-semibold text-lg">${liveValue.toFixed(2)}</div>
+                          <div className="text-sm text-gray-500">${livePrice.toFixed(2)}/share</div>
+                          {liveInfo && <PriceChange change={liveInfo.change} changePct={liveInfo.change_pct} />}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-semibold text-lg">${holding.value.toFixed(2)}</div>
-                        <div className="text-sm text-gray-500">${holding.current_price.toFixed(2)}/share</div>
-                      </div>
+
+                      {stockHistory[holding.symbol] && (
+                        <div className="mt-2 pt-2 border-t">
+                          <div className="text-xs text-gray-400 mb-1">30-day trend</div>
+                          <Sparkline
+                            data={stockHistory[holding.symbol]}
+                            color={liveInfo?.change >= 0 ? '#10b981' : '#ef4444'}
+                            width={200}
+                            height={36}
+                          />
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
-                
+                  );
+                })}
+
                 <div className="border-t pt-4 mt-4">
                   <div className="flex justify-between items-center font-bold text-lg">
                     <span>Total Portfolio Value</span>
                     <span className="text-purple-600">
-                      ${portfolio.reduce((sum, h) => sum + h.value, 0).toFixed(2)}
+                      ${portfolio.reduce((sum, h) => {
+                        const p = stockPrices[h.symbol]?.price || h.current_price;
+                        return sum + h.shares * p;
+                      }, 0).toFixed(2)}
                     </span>
                   </div>
+                  {lastPriceUpdate && (
+                    <div className="text-xs text-gray-400 text-right mt-1">
+                      Live prices as of {lastPriceUpdate.toLocaleTimeString()}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
